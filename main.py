@@ -1,51 +1,41 @@
 from fastapi import FastAPI, HTTPException
-import os
 import requests
-from requests.auth import HTTPBasicAuth
+import os
 
-app = FastAPI(title="TurfVisionIA API", version="1.0.0")
-
-RACING_API_BASE_URL = "https://api.theracingapi.com/v1"
+app = FastAPI()
 
 RACING_API_USERNAME = os.getenv("RACING_API_USERNAME")
 RACING_API_PASSWORD = os.getenv("RACING_API_PASSWORD")
+
+BASE_URL = "https://api.theracingapi.com/v1"
+
 
 @app.get("/")
 def root():
     return {"status": "TurfVisionIA API active"}
 
-def _auth():
-    if not RACING_API_USERNAME or not RACING_API_PASSWORD:
-        raise HTTPException(
-            status_code=500,
-            detail="Missing Racing API credentials (RACING_API_USERNAME / RACING_API_PASSWORD)"
-        )
-    return HTTPBasicAuth(RACING_API_USERNAME, RACING_API_PASSWORD)
 
 @app.get("/racecards")
-def list_racecards():
+def racecards(region: str = "FR"):
+    """
+    Récupère toutes les courses disponibles (racecards)
+    Filtrage ensuite côté GPT (Deauville, R1C1, etc.)
+    """
     try:
-        r = requests.get(
-            f"{RACING_API_BASE_URL}/racecards",
-            auth=_auth(),
+        response = requests.get(
+            f"{BASE_URL}/racecards",
+            auth=(RACING_API_USERNAME, RACING_API_PASSWORD),
+            params={"region": region},
             timeout=15
         )
-        if r.status_code != 200:
-            raise HTTPException(status_code=r.status_code, detail=r.text)
-        return r.json()
-    except requests.RequestException as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/racecards/{race_id}")
-def get_racecard(race_id: str):
-    try:
-        r = requests.get(
-            f"{RACING_API_BASE_URL}/racecards/{race_id}",
-            auth=_auth(),
-            timeout=15
-        )
-        if r.status_code != 200:
-            raise HTTPException(status_code=r.status_code, detail=r.text)
-        return r.json()
-    except requests.RequestException as e:
+        if response.status_code != 200:
+            raise HTTPException(
+                status_code=response.status_code,
+                detail=response.text
+            )
+
+        return response.json()
+
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
