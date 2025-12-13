@@ -2,85 +2,71 @@ from fastapi import FastAPI, HTTPException
 import os
 import requests
 from requests.auth import HTTPBasicAuth
+from datetime import date
 
 app = FastAPI(title="TurfVisionIA API")
 
-# =====================
-# CONFIG
-# =====================
 RACING_API_BASE_URL = "https://api.theracingapi.com/v1"
+USERNAME = os.getenv("RACING_API_USERNAME")
+PASSWORD = os.getenv("RACING_API_PASSWORD")
 
-RACING_API_USERNAME = os.getenv("RACING_API_USERNAME")
-RACING_API_PASSWORD = os.getenv("RACING_API_PASSWORD")
-
-if not RACING_API_USERNAME or not RACING_API_PASSWORD:
+if not USERNAME or not PASSWORD:
     raise RuntimeError("Missing Racing API credentials")
 
-# =====================
-# ROOT
-# =====================
+
 @app.get("/")
 def root():
     return {"status": "TurfVisionIA API active"}
 
-# =====================
-# RACE ENDPOINT
-# =====================
-@app.get("/race/{race_id}")
-def get_race(race_id: str):
+
+@app.get("/race")
+def get_race(course: str, race_number: int):
     """
-    Exemple race_id :
-    FR-2024-12-13-R1-C1
+    Exemple:
+    /race?course=Deauville&race_number=1
     """
 
+    today = date.today().isoformat()
+
     try:
-        response = requests.get(
-            f"{RACING_API_BASE_URL}/racecards/{race_id}",
-            auth=HTTPBasicAuth(RACING_API_USERNAME, RACING_API_PASSWORD),
-            timeout=10
+        r = requests.get(
+            f"{RACING_API_BASE_URL}/racecards",
+            params={
+                "date": today,
+                "region": "FR"
+            },
+            auth=HTTPBasicAuth(USERNAME, PASSWORD),
+            timeout=15
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Connection error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-    # ❌ API error
-    if response.status_code != 200:
-        return {
-            "status": "error",
-            "message": "Race not found or unavailable",
-            "race_id": race_id
-        }
+    if r.status_code != 200:
+        raise HTTPException(status_code=502, detail=r.text)
 
-    # ❌ Not JSON
-    try:
-        data = response.json()
-    except Exception:
-        return {
-            "status": "error",
-            "message": "Invalid API response",
-            "raw": response.text
-        }
+    data = r.json().get("racecards", [])
 
-    # ❌ No runners
-    runners = data.get("runners")
-    if not isinstance(runners, list):
-        return {
-            "status": "no_data",
-            "message": "No runners available for this race",
-            "race_id": race_id
-        }
+    # filtrer par hippodrome
+    races = [rc for rc in data if rc.get("course", "").lower() == course.lower()]
 
-    horses = []
-    for r in runners:
-        horses.append({
-            "number": r.get("number"),
-            "name": r.get("horse_name"),
-            "jockey": r.get("jockey_name"),
-            "trainer": r.get("trainer_name"),
-            "odds": r.get("odds", {})
-        })
+    if len(races) < race_number:
+        return {"error": "Race not found"}
+
+    race = races[race_number - 1]
 
     return {
-        "status": "ok",
-        "race_id": race_id,
-        "horses": horses
+        "race_id": race["race_id"],
+        "course": race["course"],
+        "race_name": race["race_name"],
+        "off_time": race["off_time"],
+        "runners": [
+            {
+                "number": r["number"],
+                "horse": r["horse"],
+                "jockey": r["jockey"],
+                "trainer": r["trainer"],
+                "draw": r["draw"]
+            }
+            for r in race.get("runners", [])
+        ]
     }
