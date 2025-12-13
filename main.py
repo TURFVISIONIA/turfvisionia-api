@@ -16,16 +16,14 @@ def root():
 
 
 @app.get("/racecards")
-def racecards(region: str = "FR"):
+def racecards():
     """
-    Récupère toutes les courses disponibles (racecards)
-    Filtrage ensuite côté GPT (Deauville, R1C1, etc.)
+    Récupère toutes les courses (racecards) sans aucun paramètre
     """
     try:
         response = requests.get(
             f"{BASE_URL}/racecards",
             auth=(RACING_API_USERNAME, RACING_API_PASSWORD),
-            params={"region": region},
             timeout=15
         )
 
