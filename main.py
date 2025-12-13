@@ -2,85 +2,78 @@ from fastapi import FastAPI, HTTPException
 import requests
 import os
 from collections import defaultdict
+from datetime import datetime
 
 app = FastAPI(title="TurfVisionIA API")
 
-# =========================
-# CONFIG THE RACING API
-# =========================
 RACING_API_USERNAME = os.getenv("RACING_API_USERNAME")
 RACING_API_PASSWORD = os.getenv("RACING_API_PASSWORD")
 
-if not RACING_API_USERNAME or not RACING_API_PASSWORD:
-    raise RuntimeError("RACING_API_USERNAME or RACING_API_PASSWORD missing")
-
 BASE_URL = "https://api.theracingapi.com/v1"
 
-# =========================
-# ROOT
-# =========================
 @app.get("/")
 def root():
     return {"status": "TurfVisionIA API active"}
 
-# =========================
-# RAW DEBUG ENDPOINT
-# =========================
+# DEBUG RAW
 @app.get("/racecards")
 def racecards_raw():
+    response = requests.get(
+        f"{BASE_URL}/racecards",
+        auth=(RACING_API_USERNAME, RACING_API_PASSWORD),
+        timeout=15
+    )
+    if response.status_code != 200:
+        raise HTTPException(status_code=response.status_code, detail=response.text)
+    return response.json()
+
+def build_pmu_mapping(api_response):
     """
-    Retour brut TheRacingAPI (debug)
+    Adapté EXACTEMENT au format TheRacingAPI réel
     """
-    try:
-        response = requests.get(
-            f"{BASE_URL}/racecards",
-            auth=(RACING_API_USERNAME, RACING_API_PASSWORD),
-            timeout=15
-        )
+    racecards = api_response.get("racecards")
 
-        if response.status_code != 200:
-            raise HTTPException(
-                status_code=response.status_code,
-                detail=response.text
-            )
+    if not racecards:
+        return []
 
-        return response.json()
+    # Si c'est un objet unique → on le met en liste
+    if isinstance(racecards, dict):
+        racecards = [racecards]
 
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    # Filtrer France uniquement
+    fr_races = [
+        r for r in racecards
+        if r.get("region") == "FR"
+    ]
 
-# =========================
-# PMU MAPPING (R / C)
-# =========================
-def build_pmu_mapping(races):
     grouped = defaultdict(list)
 
-    for r in races:
-        venue = r.get("venue") or r.get("meeting_name")
-        start_time = r.get("start_time") or r.get("off_time")
+    for r in fr_races:
+        hippodrome = r.get("course")
+        start_time = r.get("off_dt")
+        race_id = r.get("race_id")
 
-        if not venue or not start_time or not r.get("race_id"):
+        if not hippodrome or not start_time or not race_id:
             continue
 
-        grouped[venue].append({
-            "race_id": r["race_id"],
-            "venue": venue,
+        grouped[hippodrome].append({
+            "race_id": race_id,
             "start_time": start_time
         })
 
     pmu_races = []
     meeting_number = 1
 
-    for venue, venue_races in grouped.items():
-        venue_races.sort(key=lambda x: x["start_time"])
+    for hippodrome, races in grouped.items():
+        races.sort(key=lambda x: x["start_time"])
         course_number = 1
 
-        for r in venue_races:
+        for r in races:
             pmu_races.append({
                 "race_id": r["race_id"],
                 "meeting": meeting_number,
                 "race_number": course_number,
-                "hippodrome": venue,
+                "hippodrome": hippodrome,
                 "start_time": r["start_time"]
             })
             course_number += 1
@@ -89,42 +82,17 @@ def build_pmu_mapping(races):
 
     return pmu_races
 
-# =========================
-# GPT SAFE ENDPOINT (FIXED)
-# =========================
 @app.get("/gpt/racecards")
-def gpt_racecards(date: str, country: str = "FR"):
-    """
-    Endpoint utilisé par GPT
-    """
-    try:
-        response = requests.get(
-            f"{BASE_URL}/racecards",  # ✅ BON ENDPOINT
-            auth=(RACING_API_USERNAME, RACING_API_PASSWORD),
-            params={
-                "date": date,
-                "country": country
-            },
-            timeout=15
-        )
+def gpt_racecards():
+    response = requests.get(
+        f"{BASE_URL}/racecards",
+        auth=(RACING_API_USERNAME, RACING_API_PASSWORD),
+        timeout=15
+    )
 
-        if response.status_code != 200:
-            raise HTTPException(
-                status_code=response.status_code,
-                detail=response.text
-            )
+    if response.status_code != 200:
+        raise HTTPException(status_code=response.status_code, detail=response.text)
 
-        races = response.json()
+    mapped = build_pmu_mapping(response.json())
 
-        if not isinstance(races, list):
-            raise HTTPException(
-                status_code=500,
-                detail="Unexpected TheRacingAPI response format"
-            )
-
-        mapped = build_pmu_mapping(races)
-
-        return {"races": mapped}
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return {"races": mapped}
