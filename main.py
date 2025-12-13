@@ -6,6 +6,9 @@ from datetime import date as dt_date
 
 app = FastAPI(title="TurfVisionIA API")
 
+# =========================================================
+# THE RACING API CONFIG
+# =========================================================
 RACING_API_USERNAME = os.getenv("RACING_API_USERNAME")
 RACING_API_PASSWORD = os.getenv("RACING_API_PASSWORD")
 
@@ -14,11 +17,16 @@ if not RACING_API_USERNAME or not RACING_API_PASSWORD:
 
 BASE_URL = "https://api.theracingapi.com/v1"
 
+# =========================================================
+# ROOT
+# =========================================================
 @app.get("/")
 def root():
     return {"status": "TurfVisionIA API active"}
 
-# ---------- RAW DEBUG ----------
+# =========================================================
+# RAW DEBUG (OPTIONNEL)
+# =========================================================
 @app.get("/racecards")
 def racecards_raw():
     response = requests.get(
@@ -30,7 +38,9 @@ def racecards_raw():
         raise HTTPException(status_code=response.status_code, detail=response.text)
     return response.json()
 
-# ---------- PMU MAPPING ----------
+# =========================================================
+# PMU MAPPING
+# =========================================================
 def build_pmu_mapping(api_response):
     racecards = api_response.get("racecards")
     if not racecards:
@@ -51,7 +61,6 @@ def build_pmu_mapping(api_response):
 
     pmu_races = []
     meeting_number = 1
-
     for hippodrome, races in grouped.items():
         races.sort(key=lambda x: x["start_time"])
         course_number = 1
@@ -68,7 +77,9 @@ def build_pmu_mapping(api_response):
 
     return pmu_races
 
-# ---------- GPT: RACE LIST ----------
+# =========================================================
+# GPT — LISTE DES COURSES
+# =========================================================
 @app.get("/gpt/racecards")
 def gpt_racecards(date: str | None = None):
     if date is None:
@@ -87,22 +98,38 @@ def gpt_racecards(date: str | None = None):
     mapped = build_pmu_mapping(response.json())
     return {"races": mapped}
 
-# ---------- GPT: RACE DETAIL ----------
+# =========================================================
+# GPT — DÉTAIL DE COURSE (SANS 2e APPEL EXTERNE)
+# =========================================================
 @app.get("/gpt/race")
-def gpt_race(race_id: str):
+def gpt_race(race_id: str, date: str | None = None):
+    if date is None:
+        date = dt_date.today().isoformat()
+
     response = requests.get(
-        f"{BASE_URL}/racecards/{race_id}",
+        f"{BASE_URL}/racecards",
         auth=(RACING_API_USERNAME, RACING_API_PASSWORD),
+        params={"date": date},
         timeout=20
     )
 
     if response.status_code != 200:
         raise HTTPException(status_code=response.status_code, detail=response.text)
 
-    data = response.json()
+    racecards = response.json().get("racecards")
+    if not racecards:
+        raise HTTPException(status_code=404, detail="No racecards available")
+
+    if isinstance(racecards, dict):
+        racecards = [racecards]
+
+    race = next((r for r in racecards if r.get("race_id") == race_id), None)
+
+    if not race:
+        raise HTTPException(status_code=404, detail="Race not found")
 
     runners = []
-    for r in data.get("runners", []):
+    for r in race.get("runners", []):
         runners.append({
             "number": r.get("number"),
             "name": r.get("horse"),
@@ -114,10 +141,11 @@ def gpt_race(race_id: str):
     return {
         "race": {
             "race_id": race_id,
-            "hippodrome": data.get("course"),
-            "date": data.get("date"),
-            "distance": data.get("distance"),
-            "going": data.get("going"),
+            "hippodrome": race.get("course"),
+            "date": race.get("date"),
+            "start_time": race.get("off_dt"),
+            "distance": race.get("distance"),
+            "going": race.get("going"),
             "runners": runners
         }
     }
