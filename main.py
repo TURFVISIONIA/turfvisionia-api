@@ -3,9 +3,6 @@ import requests
 import os
 from collections import defaultdict
 
-# =========================
-# APP
-# =========================
 app = FastAPI(title="TurfVisionIA API")
 
 # =========================
@@ -27,13 +24,12 @@ def root():
     return {"status": "TurfVisionIA API active"}
 
 # =========================
-# INTERNAL DEBUG ENDPOINT
-# (RAW TheRacingAPI - NOT FOR GPT)
+# RAW DEBUG ENDPOINT
 # =========================
 @app.get("/racecards")
 def racecards_raw():
     """
-    Retour brut TheRacingAPI (debug uniquement)
+    Retour brut TheRacingAPI (debug)
     """
     try:
         response = requests.get(
@@ -54,14 +50,9 @@ def racecards_raw():
         raise HTTPException(status_code=500, detail=str(e))
 
 # =========================
-# PMU MAPPING (R1 / C1)
+# PMU MAPPING (R / C)
 # =========================
 def build_pmu_mapping(races):
-    """
-    Transforme les courses TheRacingAPI en logique PMU :
-    - Réunion (R1, R2, ...)
-    - Course (C1, C2, ...)
-    """
     grouped = defaultdict(list)
 
     for r in races:
@@ -99,19 +90,16 @@ def build_pmu_mapping(races):
     return pmu_races
 
 # =========================
-# GPT SAFE ENDPOINT
+# GPT SAFE ENDPOINT (FIXED)
 # =========================
 @app.get("/gpt/racecards")
 def gpt_racecards(date: str, country: str = "FR"):
     """
-    ENDPOINT UTILISÉ PAR GPT
-    - Appelle TheRacingAPI
-    - Reconstruit R/C
-    - Retourne un JSON SIMPLE et STABLE
+    Endpoint utilisé par GPT
     """
     try:
         response = requests.get(
-            f"{BASE_URL}/races",
+            f"{BASE_URL}/racecards",  # ✅ BON ENDPOINT
             auth=(RACING_API_USERNAME, RACING_API_PASSWORD),
             params={
                 "date": date,
