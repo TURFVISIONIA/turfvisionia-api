@@ -21,9 +21,8 @@ PARIS_TZ = ZoneInfo("Europe/Paris")
 # Helpers
 def _get_racecards_today():
     """
-    IMPORTANT :
-    TheRacingAPI n'accepte pas forcément 'date=...'
-    On appelle sans paramètres (courses du jour).
+    Récupère les racecards du jour auprès de TheRacingAPI
+    (toutes les courses jouables, FR + étranger).
     """
     resp = requests.get(
         f"{BASE_URL}/racecards",
@@ -43,7 +42,7 @@ def _ensure_list(x):
 
 def _parse_dt(dt_str: str):
     """
-    TheRacingAPI renvoie souvent off_dt type '2026-12-31T12:00:00+00:00'
+    Parse une date ISO renvoyée par TheRacingAPI, ou None.
     """
     if not dt_str:
         return None
@@ -63,7 +62,7 @@ def to_paris_time(dt_str: str):
 def build_pmu_mapping(api_response):
     """
     Reconstruit Réunion / Course (R/C) de manière STABLE :
-    - Filtre FR
+    - Garde TOUTES les courses renvoyées (FR + étranger jouable)
     - Groupe par hippodrome (course)
     - Trie les hippodromes par leur PREMIERE heure de départ (pour numéro de réunion stable)
     - Trie les courses par heure de départ (course_number stable)
@@ -71,12 +70,12 @@ def build_pmu_mapping(api_response):
     racecards = api_response.get("racecards")
     racecards = _ensure_list(racecards)
 
-    # Filtre FR uniquement
-    fr_races = [r for r in racecards if r.get("region") == "FR"]
+    # On garde TOUTES les courses (pas uniquement region == "FR")
+    all_races = racecards
 
     # group by hippodrome
     grouped = defaultdict(list)
-    for r in fr_races:
+    for r in all_races:
         hippodrome = r.get("course")
         off_dt = r.get("off_dt")
         race_id = r.get("race_id")
@@ -84,10 +83,9 @@ def build_pmu_mapping(api_response):
             continue
         grouped[hippodrome].append(r)
 
-    # Ordonner les hippodromes par leur première heure de départ (stable PMU-like)
+    # Ordonner les hippodromes par leur première heure de départ (stable R1, R2, R3...)
     hippodromes_sorted = []
     for hip, races in grouped.items():
-        # tris = [parse_dt(x.get("off_dt", "")) for x in races]
         dts = [_parse_dt(x.get("off_dt", "")) for x in races]
         first_dt = min(dts) if dts else None
         hippodromes_sorted.append((hip, first_dt))
@@ -100,22 +98,28 @@ def build_pmu_mapping(api_response):
     for hip, _ in hippodromes_sorted:
         races = grouped[hip]
 
-        # Trier les courses du hippodrome par heure
-        races.sort(key=lambda x: (_parse_dt(x.get("off_dt", "")) is None, _parse_dt(x.get("off_dt", ""))))
+        # Trier les courses du hippodrome par heure (C1, C2, C3...)
+        races.sort(
+            key=lambda x: (
+                _parse_dt(x.get("off_dt", "")) is None,
+                _parse_dt(x.get("off_dt", ""))
+            )
+        )
 
         course_number = 1
         for r in races:
             mapped.append({
                 "race_id": r.get("race_id"),
-                "meeting_number": meeting_number,
-                "race_number": course_number,
+                "meeting_number": meeting_number,  # R1, R2, R3...
+                "race_number": course_number,      # C1, C2, C3...
                 "hippodrome": hip,
                 "region": r.get("region"),
+                "country": r.get("country"),
                 "race_name": r.get("race_name"),
                 "start_time_utc": r.get("off_dt"),
                 "start_time_paris": to_paris_time(r.get("off_dt")),
                 "distance_m": r.get("distance"),
-                "surface": r.get("surface"),  # selon format
+                "surface": r.get("surface"),
                 "going": r.get("going"),
             })
             course_number += 1
@@ -127,8 +131,8 @@ def build_pmu_mapping(api_response):
 
 def extract_race_detail(api_response, race_id: str):
     """
-    Récupère la course exacte par race_id dans /racecards, et renvoie un JSON GPT-safe.
-    Aucune invention : si champ absent -> None.
+    Récupère la course exacte par race_id dans /racecards,
+    et renvoie un JSON propre pour le GPT.
     """
     racecards = api_response.get("racecards")
     racecards = _ensure_list(racecards)
@@ -152,6 +156,7 @@ def extract_race_detail(api_response, race_id: str):
             "race_id": race.get("race_id"),
             "hippodrome": race.get("course"),
             "region": race.get("region"),
+            "country": race.get("country"),
             "race_name": race.get("race_name"),
             "start_time_utc": race.get("off_dt"),
             "start_time_paris": to_paris_time(race.get("off_dt")),
@@ -174,12 +179,27 @@ def root():
 
 @app.get("/racecards")
 def racecards_raw():
-    # Debug brut
+    # Réponse brute TheRacingAPI (toutes les courses du jour)
     return _get_racecards_today()
 
 
 @app.get("/gpt/racecards")
 def gpt_racecards():
+    """
+    Liste des courses pour le GPT.
+    Exemple de sortie :
+    {
+      "races": [
+        {
+          "race_id": "...",
+          "meeting_number": 1,
+          "race_number": 3,
+          "hippodrome": "Vincennes",
+          ...
+        }
+      ]
+    }
+    """
     data = _get_racecards_today()
     mapped = build_pmu_mapping(data)
     return {"races": mapped}
@@ -187,6 +207,10 @@ def gpt_racecards():
 
 @app.get("/gpt/race/{race_id}")
 def gpt_race(race_id: str):
+    """
+    Détail complet d'une course identifiée par son race_id.
+    Utilisé après avoir choisi la bonne R?C? dans /gpt/racecards.
+    """
     data = _get_racecards_today()
     return extract_race_detail(data, race_id)
 
