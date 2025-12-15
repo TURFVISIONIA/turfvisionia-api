@@ -20,7 +20,6 @@ PARIS_TZ = ZoneInfo("Europe/Paris")
 def _get_racecards_today():
     resp = requests.get(
         f"{BASE_URL}/racecards",
-        params={"region": "FR,GB,IE"},
         auth=(RACING_API_USERNAME, RACING_API_PASSWORD),
         timeout=20
     )
@@ -135,7 +134,7 @@ def extract_race_detail(api_response, race_id: str):
             "country": race.get("country"),
             "race_name": race.get("race_name"),
             "start_time_utc": race.get("off_dt"),
-            "start_time_paris": to_paris_time(race.get("off_dt")),
+            "start_time_paris": to_paris_time(r.get("off_dt")),
             "distance_m": race.get("distance"),
             "surface": race.get("surface"),
             "going": race.get("going"),
