@@ -24,15 +24,21 @@ def _call_bookies(task: str, extra_params: dict | None = None):
     try:
         resp = requests.get(BOOKIES_BASE_URL, params=params, timeout=20)
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"BookiesAPI error: {e}")
+        raise HTTPException(status_code=502, detail=f"BookiesAPI connection error: {e}")
 
     if resp.status_code != 200:
-        raise HTTPException(status_code=resp.status_code, detail=resp.text)
+        raise HTTPException(
+            status_code=resp.status_code,
+            detail=f"BookiesAPI HTTP {resp.status_code}: {resp.text[:200]}"
+        )
 
     try:
         return resp.json()
-    except Exception:
-        raise HTTPException(status_code=500, detail="Invalid JSON from BookiesAPI")
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"BookiesAPI returned non-JSON. Raw (first 300 chars): {resp.text[:300]}"
+        )
 
 
 def _to_paris(iso_str: str | None):
@@ -53,15 +59,11 @@ def _ensure_list(x):
 
 def map_bookies_racecards(raw):
     """
-    Map BookiesAPI horseracingpre format -> simple list of races
-    with meeting_number / race_number style structure.
+    Map BookiesAPI horseracingpre JSON -> list of races with R1, C1 style structure.
     """
-    # La structure exacte dépend du JSON BookiesAPI.
-    # On suppose un tableau "games" avec des champs basiques.
     games = raw.get("games") or raw.get("data") or []
     games = _ensure_list(games)
 
-    # On regroupe par hippodrome / country / meeting_id si dispo.
     grouped = defaultdict(list)
     for g in games:
         course = g.get("league") or g.get("country") or "Unknown"
@@ -69,12 +71,8 @@ def map_bookies_racecards(raw):
 
     meetings_sorted = []
     for course, races in grouped.items():
-        # On essaie d'ordonner par heure si possible
-        times = []
-        for r in races:
-            t = r.get("time") or r.get("start_time")
-            times.append(t)
-        first_time = min(times) if times else None
+        times = [r.get("time") or r.get("start_time") for r in races]
+        first_time = min([t for t in times if t]) if any(times) else None
         meetings_sorted.append((course, first_time))
 
     meetings_sorted.sort(key=lambda x: (x[1] is None, x[1]))
@@ -84,8 +82,6 @@ def map_bookies_racecards(raw):
 
     for course, _first_time in meetings_sorted:
         races = grouped[course]
-
-        # Tri par heure de départ si dispo
         races.sort(key=lambda r: r.get("time") or r.get("start_time") or "")
 
         race_number = 1
@@ -93,19 +89,17 @@ def map_bookies_racecards(raw):
             game_id = r.get("id") or r.get("game_id")
             race_name = r.get("name") or r.get("event") or ""
             start_time_raw = r.get("time") or r.get("start_time")
-            out.append(
-                {
-                    "game_id": game_id,
-                    "meeting_number": meeting_number,
-                    "race_number": race_number,
-                    "course": course,
-                    "race_name": race_name,
-                    "start_time_raw": start_time_raw,
-                    "start_time_paris": _to_paris(start_time_raw),
-                    "country": r.get("country_code") or r.get("cc"),
-                    "bookies_raw": r,
-                }
-            )
+            
+            out.append({
+                "game_id": game_id,
+                "meeting_number": meeting_number,
+                "race_number": race_number,
+                "course": course,
+                "race_name": race_name,
+                "start_time_raw": start_time_raw,
+                "start_time_paris": _to_paris(start_time_raw),
+                "country": r.get("country_code") or r.get("cc"),
+            })
             race_number += 1
 
         meeting_number += 1
@@ -114,22 +108,16 @@ def map_bookies_racecards(raw):
 
 
 def get_bookies_horseracing_pre():
-    """
-    Appel brut BookiesAPI pour les courses hippiques prematch.
-    """
     return _call_bookies("horseracingpre")
 
 
 def get_bookies_race_detail(game_id: str):
-    """
-    Détail d'une course via eventdata + allodds.
-    """
     if not game_id:
         raise HTTPException(status_code=400, detail="game_id required")
-
+    
     events = _call_bookies("eventdata", {"game_id": game_id})
     odds = _call_bookies("allodds", {"game_id": game_id})
-
+    
     return {
         "game_id": game_id,
         "events": events,
@@ -145,7 +133,7 @@ def root():
 @app.get("/bookies/raw/horseracingpre")
 def bookies_raw_horseracingpre():
     """
-    Donne le JSON brut BookiesAPI horseracingpre (debug).
+    Debug endpoint : raw JSON from BookiesAPI.
     """
     return get_bookies_horseracing_pre()
 
@@ -153,7 +141,7 @@ def bookies_raw_horseracingpre():
 @app.get("/gpt/racecards")
 def gpt_racecards():
     """
-    Endpoint principal pour le GPT : liste des courses formatée.
+    Main endpoint for GPT: formatted list of races.
     """
     raw = get_bookies_horseracing_pre()
     mapped = map_bookies_racecards(raw)
@@ -163,7 +151,7 @@ def gpt_racecards():
 @app.get("/gpt/race/{game_id}")
 def gpt_race(game_id: str):
     """
-    Détail d'une course spécifique (événements + cotes).
+    Race details: events + odds.
     """
     detail = get_bookies_race_detail(game_id)
     return detail
